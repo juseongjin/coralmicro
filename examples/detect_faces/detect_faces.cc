@@ -71,7 +71,6 @@ STATIC_TENSOR_ARENA_IN_SDRAM(tensor_arena, kTensorArenaSize);
   printf("Face Detection Example!\r\n");
   // Turn on Status LED to show the board is on.
   LedSet(Led::kStatus, true);
-
   std::vector<uint8_t> model;
   if (!LfsReadFile(kModelPath, &model)) {
     printf("ERROR: Failed to load %s\r\n", kModelPath);
@@ -112,8 +111,8 @@ STATIC_TENSOR_ARENA_IN_SDRAM(tensor_arena, kTensorArenaSize);
   int model_width = input_tensor->dims->data[2];
   
   int n = 1; // Count inference
-  // while (true) {
-  while (n <= ITER) {
+  while (true) {
+  // while (n <= ITER) {
     CameraFrameFormat fmt{CameraFormat::kRgb,
                           CameraFilterMethod::kBilinear,
                           CameraRotation::k270,
@@ -138,7 +137,7 @@ STATIC_TENSOR_ARENA_IN_SDRAM(tensor_arena, kTensorArenaSize);
     // portTICK_PERIOD_MS는 1 tick이 몇 ms인지 알려줌
     uint32_t end_us = micros_dwt();
     float elapsed_us = (float)(end_us - start_us) / 1000;
-    printf("%d' Inference time: %.6f us\r\n", n++, elapsed_us);
+    printf("%d' Inference time: %.6f ms\r\n", n++, elapsed_us);
 
     if (auto results =
             tensorflow::GetDetectionResults(&interpreter, kThreshold, kTopK);
