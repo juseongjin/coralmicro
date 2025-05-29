@@ -94,3 +94,6 @@ git rebase origin/main
 git submodule update --init --recursive
 ```
 
+## Requirements
+
+Use python==3.11.8 && hidapi==0.14.0
