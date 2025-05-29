@@ -27,6 +27,15 @@
 #include "third_party/tflite-micro/tensorflow/lite/micro/micro_interpreter.h"
 #include "third_party/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h"
 
+#include "third_party/freertos_kernel/include/FreeRTOS.h"
+#include "third_party/freertos_kernel/include/task.h"
+#include <cstdint>
+
+// CSJ
+// 시스템 클럭 (MHz 단위) - 정확한 값은 SoC 사양 또는 SystemCoreClock에서 확인
+extern uint32_t SystemCoreClock;
+#define ITER 30 // Interative Inference
+
 // Runs face detection on the Edge TPU, using the on-board camera, printing
 // results to the serial console and turning on the User LED when a face
 // is detected.
@@ -34,6 +43,18 @@
 // To build and flash from coralmicro root:
 //    bash build.sh
 //    python3 scripts/flashtool.py -e face_detection
+
+inline void DWT_Init() {
+  if (!(CoreDebug->DEMCR & CoreDebug_DEMCR_TRCENA_Msk)) {
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+  }
+  DWT->CYCCNT = 0;
+  DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+}
+
+inline uint32_t micros_dwt() {
+  return DWT->CYCCNT / (SystemCoreClock / 1000000);
+}
 
 namespace coralmicro {
 namespace {
@@ -89,8 +110,10 @@ STATIC_TENSOR_ARENA_IN_SDRAM(tensor_arena, kTensorArenaSize);
   auto* input_tensor = interpreter.input_tensor(0);
   int model_height = input_tensor->dims->data[1];
   int model_width = input_tensor->dims->data[2];
-
-  while (true) {
+  
+  int n = 1; // Count inference
+  // while (true) {
+  while (n <= ITER) {
     CameraFrameFormat fmt{CameraFormat::kRgb,
                           CameraFilterMethod::kBilinear,
                           CameraRotation::k270,
@@ -103,16 +126,25 @@ STATIC_TENSOR_ARENA_IN_SDRAM(tensor_arena, kTensorArenaSize);
       vTaskSuspend(nullptr);
     }
 
+    DWT_Init(); // 최초 1회 초기화
+
+    uint32_t start_us = micros_dwt();
+
     if (interpreter.Invoke() != kTfLiteOk) {
       printf("Failed to invoke\r\n");
       vTaskSuspend(nullptr);
     }
 
+    // portTICK_PERIOD_MS는 1 tick이 몇 ms인지 알려줌
+    uint32_t end_us = micros_dwt();
+    float elapsed_us = (float)(end_us - start_us) / 1000;
+    printf("%d' Inference time: %.6f us\r\n", n++, elapsed_us);
+
     if (auto results =
             tensorflow::GetDetectionResults(&interpreter, kThreshold, kTopK);
         !results.empty()) {
-      printf("Found %d face(s):\r\n%s\r\n", results.size(),
-             tensorflow::FormatDetectionOutput(results).c_str());
+      // printf("Found %d face(s):\r\n%s\r\n", results.size(),
+      //        tensorflow::FormatDetectionOutput(results).c_str());
       LedSet(Led::kUser, true);
     } else {
       LedSet(Led::kUser, false);
@@ -127,4 +159,3 @@ extern "C" void app_main(void* param) {
   (void)param;
   coralmicro::Main();
 }
-
