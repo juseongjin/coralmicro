@@ -53,7 +53,7 @@ namespace coralmicro {
   while (true) {
     auto start = TimerMicros();
     loop();
-    printf("Latency: %lu us\r\n", static_cast<uint32_t>(TimerMicros() - start));
+    printf("Latency: %.6f us\r\n", static_cast<float>((TimerMicros() - start)/1000));
   }
 }
 }  // namespace coralmicro

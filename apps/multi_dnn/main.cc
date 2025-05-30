@@ -6,6 +6,7 @@
 #include "libs/base/led.h"
 #include "libs/base/strings.h"
 #include "libs/base/tasks.h"
+#include "libs/base/timer.h"
 
 #include "libs/tensorflow/utils.h"
 #include "third_party/tflite-micro/tensorflow/lite/micro/micro_interpreter.h"
@@ -20,47 +21,69 @@
 #include <vector>
 #include <cstring>
 
-inline void DWT_Init() {
-  if (!(CoreDebug->DEMCR & CoreDebug_DEMCR_TRCENA_Msk)) {
-    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
-  }
-  DWT->CYCCNT = 0;
-  DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
-}
-
-inline uint32_t micros_dwt() {
-  return DWT->CYCCNT / (SystemCoreClock / 1000000);
-}
+// Runs face detection on the Edge TPU, using the on-board camera, printing
+// results to the serial console and turning on the User LED when a face
+// is detected.
+//
+// Change model load, resolver
+// Change CMakeLists.txt model
 
 namespace coralmicro {
 namespace {
 
 constexpr int kPersonIndex = 1;
 constexpr int kNotAPersonIndex = 0;
-constexpr int kTensorArenaSizePerson = 100 * 1024;
-constexpr int kTensorArenaSizeLstm = 10 * 1024;
-STATIC_TENSOR_ARENA_IN_OCRAM(tensor_arena_person, kTensorArenaSizePerson);
-STATIC_TENSOR_ARENA_IN_OCRAM(tensor_arena_lstm, kTensorArenaSizeLstm);
+constexpr int kTensorArenaSizePerson = 1024 * 1024;
+constexpr int kTensorArenaSizeLstm = 1024 * 1024;
+STATIC_TENSOR_ARENA_IN_SDRAM(tensor_arena_person, kTensorArenaSizePerson);
+STATIC_TENSOR_ARENA_IN_SDRAM(tensor_arena_lstm, kTensorArenaSizeLstm);
 
 
 [[noreturn]] void PersonDetectTask(void* param) {
+  vTaskDelay(pdMS_TO_TICKS(1000));
+
+  /////////// Load Model ///////////
   std::vector<uint8_t> model;
-    if (!LfsReadFile("/models/person_detect_model.tflite", &model)) {
+  if (!LfsReadFile("/models/ssd_mobilenet_v1_coco_quant_no_nms.tflite", &model)) {
+  // if (!LfsReadFile("/models/mcunet-320kb-1mb_imagenet.tflite", &model)) {
+  // if (!LfsReadFile("/models/person_detect_model.tflite", &model)) {
     printf("Error: Failed to load person_detect_model\r\n");
     vTaskSuspend(nullptr);
   }
   printf("Model load done\r\n");
+  fflush(stdout);
+  //////////////////////////////////
 
+  /////////// Interprete ///////////
   tflite::MicroErrorReporter error_reporter;
-  tflite::MicroMutableOpResolver<5> resolver;
-  resolver.AddAveragePool2D();
+  // tflite::MicroMutableOpResolver<5> resolver;
+  // resolver.AddAveragePool2D();
+  // resolver.AddConv2D();
+  // resolver.AddDepthwiseConv2D();
+  // resolver.AddReshape();
+  // resolver.AddSoftmax();
+  // mcunet
+  // tflite::MicroMutableOpResolver<6> resolver;
+  // resolver.AddConv2D();
+  // resolver.AddPad();
+  // resolver.AddDepthwiseConv2D();
+  // resolver.AddReshape();
+  // resolver.AddAdd();
+  // resolver.AddAveragePool2D();
+  // ssd
+  tflite::MicroMutableOpResolver<6> resolver;
   resolver.AddConv2D();
   resolver.AddDepthwiseConv2D();
   resolver.AddReshape();
-  resolver.AddSoftmax();
+  resolver.AddConcatenation();
+  resolver.AddLogistic();
+  resolver.AddDetectionPostprocess();
   tflite::MicroInterpreter interpreter(tflite::GetModel(model.data()), resolver,
-                                       tensor_arena_person, sizeof(tensor_arena_person), &error_reporter);
+                                       tensor_arena_person, kTensorArenaSizePerson, &error_reporter);
 
+  //////////////////////////////////
+
+  //////// AllocateTensor /////////
   if (interpreter.AllocateTensors() != kTfLiteOk) {
     printf("Person: AllocateTensors() failed\r\n");
     vTaskSuspend(nullptr);
@@ -73,45 +96,54 @@ STATIC_TENSOR_ARENA_IN_OCRAM(tensor_arena_lstm, kTensorArenaSizeLstm);
     printf("Person: Failed to load input image\r\n");
     vTaskSuspend(nullptr);
   }
+  //////////////////////////////////
 
-  DWT_Init(); // 최초 1회 초기화
-  int n = 1;
-  uint32_t start_us, end_us;
-  float elapsed_ms;
-  while (true) {
-    start_us = micros_dwt();
+  /////////// Inference ////////////
+  std::vector<float> time;
+  int n = 0;
+  // while (true) {
+  while (n < 30) {
+    float start = static_cast<float>(TimerMicros());
     if (interpreter.Invoke() != kTfLiteOk) {
       printf("Person: Inference failed\r\n");
     } else {
-      end_us = micros_dwt();
-      elapsed_ms = (float)(end_us - start_us) / 1000;
       auto* output = interpreter.output(0);
       // Process the inference results.
-      auto person_score =
-      static_cast<int8_t>(output->data.uint8[kPersonIndex]);
-      auto no_person_score =
-      static_cast<int8_t>(output->data.uint8[kNotAPersonIndex]);
-      printf("%d's [latency, score]: [%.6fms, %d]\r\n", n++, elapsed_ms, person_score);
+      // auto person_score =
+      // static_cast<int8_t>(output->data.uint8[kPersonIndex]);
+      // auto no_person_score =
+      // static_cast<int8_t>(output->data.uint8[kNotAPersonIndex]);
+      // time.push_back((static_cast<float>(TimerMicros()) - start)/1000);
+      // printf("Task 1 %dth latency: %.6f ms (score: %d)\r\n", n+1, (static_cast<float>(TimerMicros()) - start)/1000, person_score);
+      printf("Task 1 %dth latency: %.6f ms\r\n", n+1, (static_cast<float>(TimerMicros()) - start)/1000);
+      fflush(stdout);
     }
-    vTaskDelay(pdMS_TO_TICKS(1000));
+    // vTaskDelay(pdMS_TO_TICKS(1));
+    taskYIELD();
+    n++;
   }
+  // for(int i=0; i < time.size(); i++){
+  //   printf("Task 1 %dth latency: %.6f ms\r\n", i+1, time[i]);
+  //   fflush(stdout);
+  // }
+  vTaskDelete(NULL);
+  //////////////////////////////////
 }
 
 [[noreturn]] void LstmTask(void* param) {
-  // tensor_arena_lstm = (uint8_t*)malloc(kTensorArenaSizeLstm);
-  // if (!tensor_arena_lstm) {
-  //   printf("LSTM: Failed to allocate tensor arena memory\r\n");
-  //   vTaskSuspend(nullptr);
-  // }
+  vTaskDelay(pdMS_TO_TICKS(1000));
 
+  /////////// Load Model ////////////
   std::vector<uint8_t> model;
   if (!LfsReadFile("/models/trained_lstm_int8.tflite", &model)) {
-  // if (!LfsReadFile("/models/ssd_mobilenet_v1_coco_quant_no_nms.tflite", &model)) {
-    printf("Error: Failed to load LSTM model\r\n");
-    fflush(stdout);
+      printf("Error: Failed to load LSTM model\r\n");
     vTaskSuspend(nullptr);
   }
   printf("Model load done\r\n");
+  fflush(stdout);
+  //////////////////////////////////
+
+  //////////// Interprete //////////
   tflite::MicroErrorReporter error_reporter;
   // LSTM
   tflite::MicroMutableOpResolver<4> resolver;
@@ -119,26 +151,12 @@ STATIC_TENSOR_ARENA_IN_OCRAM(tensor_arena_lstm, kTensorArenaSizeLstm);
   resolver.AddReshape();
   resolver.AddFullyConnected();
   resolver.AddSoftmax();
-  // mcunet
-  // tflite::MicroMutableOpResolver<6> resolver;
-  // resolver.AddConv2D();
-  // resolver.AddPad();
-  // resolver.AddDepthwiseConv2D();
-  // resolver.AddReshape();
-  // resolver.AddAdd();
-  // resolver.AddAveragePool2D();
-  // ssd
-  // tflite::MicroMutableOpResolver<6> resolver;
-  // resolver.AddConv2D();
-  // resolver.AddDepthwiseConv2D();
-  // resolver.AddReshape();
-  // resolver.AddConcatenation();
-  // resolver.AddLogistic();
-  // resolver.AddDetectionPostprocess();
-
+ 
   tflite::MicroInterpreter interpreter(tflite::GetModel(model.data()), resolver,
-                                       tensor_arena_lstm, sizeof(tensor_arena_lstm), &error_reporter);
+                                       tensor_arena_lstm, kTensorArenaSizeLstm, &error_reporter);
+  //////////////////////////////////
 
+  ///////// AllocateTensor /////////
   if (interpreter.AllocateTensors() != kTfLiteOk) {
     printf("LSTM: AllocateTensors() failed\r\n");
         vTaskSuspend(nullptr);
@@ -148,25 +166,25 @@ STATIC_TENSOR_ARENA_IN_OCRAM(tensor_arena_lstm, kTensorArenaSizeLstm);
 
   std::vector<uint8_t> input_data(input->bytes, 0x1);  // 예시로 중간값(64)으로 채움
   memcpy(input->data.uint8, input_data.data(), input->bytes);
-  
   // if (!LfsReadFile("/models/person.raw", tflite::GetTensorData<uint8_t>(input),
   //                   input->bytes)) {
   //   printf("SSD: Failed to load input image\r\n");
   //   vTaskSuspend(nullptr);
   // }
+  //////////////////////////////////
 
-
-  DWT_Init(); // 최초 1회 초기화
-  int n = 1;
-  uint32_t start_us, end_us;
-  float elapsed_ms;
-  while (true) {
-    start_us = micros_dwt();
+  //////////// Inference ///////////
+  std::vector<float> time;
+  int n = 0;
+  // while (true) {
+  while (n < 100) {
+    float start = static_cast<float>(TimerMicros());
     if (interpreter.Invoke() != kTfLiteOk) {
       printf("LSTM: Inference failed\r\n");
     } else {
-      end_us = micros_dwt();
-      elapsed_ms = (float)(end_us - start_us) / 1000;
+      time.push_back((static_cast<float>(TimerMicros()) - start)/1000);
+      // printf("Task 2 %dth latency: %.6f ms\r\n", n, (static_cast<float>(TimerMicros()) - start)/1000);
+      // fflush(stdout);
       TfLiteTensor* output = interpreter.output(0);
 
       // printf("%d's [latency, result]: [%.6fms, %d]\r\n", n++, elapsed_ms, output->data.uint8[0]);
@@ -182,19 +200,26 @@ STATIC_TENSOR_ARENA_IN_OCRAM(tensor_arena_lstm, kTensorArenaSizeLstm);
       //         max_index = i;
       //     }
       // }
-      printf("%d's [latency]: [%.6fms]\r\n", n++, elapsed_ms);
     }
-    vTaskDelay(pdMS_TO_TICKS(1000));
+    // vTaskDelay(pdMS_TO_TICKS(1));
+    taskYIELD();
+    n++;
   }
+  for(int i=0; i < time.size(); i++){
+    printf("Task 2 %dth latency: %.6f ms\r\n", i+1, time[i]);
+    fflush(stdout);
+  }
+  vTaskDelete(NULL);
+  ////////////////////////////////////
 }
 
 [[noreturn]] void Main() {
   // Task 시작 부분
-  LedSet(Led::kUser, 1);  // 예: 빨간 LED ON
+  LedSet(Led::kUser, 1);  // User LED ON
 
   xTaskCreate(PersonDetectTask, "person_detect", configMINIMAL_STACK_SIZE * 30, nullptr, kAppTaskPriority, nullptr);
-  xTaskCreate(LstmTask, "lstm_task", configMINIMAL_STACK_SIZE * 30, nullptr, kAppTaskPriority, nullptr);
-  vTaskSuspend(nullptr);
+  // xTaskCreate(LstmTask, "lstm_task", configMINIMAL_STACK_SIZE * 30, nullptr, kAppTaskPriority, nullptr);
+  vTaskStartScheduler();
 }
 
 }  // namespace
